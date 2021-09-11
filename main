@@ -1,0 +1,357 @@
+#include <ECE3.h>
+
+uint16_t sensorValues[8];
+
+//float min[8]  = {719.6, 696.8, 788.8, 629.4, 765.4, 651.2, 765, 719.8};
+float max[8] = {1301.4, 1803.2, 1711.2, 1438.8, 1583, 1848.8, 1735, 1780.2};
+float finalmin[8] = {0,0,0,0,0,0,0,0};
+float pastErrors[3] = {0, 0,0};
+
+float lastError = 0;
+
+
+
+const float kp = 0.05;//0.053; //0.05  ;           //0.08;    //0.05;
+const float kd = 0.03;       //0.039 ;  //0.03 ;    //0.2; //0.065     //0.03;   //0.013;
+
+
+const int baseSpeed = 45;    //90;       //40; //40;
+const int turnTime = 1000;
+
+bool hasTurn = false;
+
+
+const int left_nslp_pin=31; // nslp ==> awake & ready for PWM
+const int left_dir_pin=29;
+const int left_pwm_pin=40;
+
+const int right_nslp_pin = 11;
+const int right_dir_pin = 30;
+const int right_pwm_pin = 39;
+
+const int LED_RF = 41;
+
+const int bump_sw_0_pin = 24;
+const int user_sw_2_pin = 74;
+
+
+
+// switch/button detector
+int bump_sw_0_reading;
+int user_sw_2_reading;
+
+bool startCar = false;
+
+
+void setup()
+{
+
+  pinMode(left_nslp_pin,OUTPUT);
+  pinMode(left_dir_pin,OUTPUT);
+  pinMode(left_pwm_pin,OUTPUT);
+
+  pinMode(right_nslp_pin,OUTPUT);
+  pinMode(right_dir_pin,OUTPUT);
+  pinMode(right_pwm_pin,OUTPUT);
+
+  pinMode(LED_RF, OUTPUT);
+
+  pinMode(bump_sw_0_pin,INPUT_PULLUP);
+  pinMode(user_sw_2_pin, INPUT_PULLUP);
+
+  digitalWrite(left_dir_pin, LOW);
+  digitalWrite(left_nslp_pin,HIGH);
+  digitalWrite(right_dir_pin, LOW);
+  digitalWrite(right_nslp_pin, HIGH);
+  
+  
+  ECE3_Init();
+  Serial.begin(9600); // set the data rate in bits per second for serial data transmission
+
+  
+  calibrate(finalmin);
+
+ 
+
+  
+  delay(2000);
+
+  
+}
+
+
+
+void normalizeArray(uint16_t sensorArray[])
+{
+  for (int i = 0 ; i < 8; i++)
+  {
+      sensorArray[i] = ( (sensorArray[i] - finalmin[i] )* 1000 ) / (max[i]);
+      
+  }
+
+  
+}
+
+
+float weight (uint16_t sensorArray[])
+{
+
+  normalizeArray(sensorArray);
+
+  //8-4-2-1 Scheme
+  float val = (- (8 * sensorArray[0])  - (4* sensorArray[1]) - (2 * sensorArray[2]) - (sensorArray[3]) + sensorArray[4] + (2 * sensorArray[5]) + (4* sensorArray[6]) + (8 * sensorArray[7]))/4; // 8;      // /4;  //divide by 57?
+
+  return val;
+
+  
+}
+
+
+
+void loop()
+{
+  // read raw sensor values
+  ECE3_read_IR(sensorValues);
+
+
+  //check if user wants to calibrate
+  bump_sw_0_reading = digitalRead(bump_sw_0_pin);
+  
+  if(bump_sw_0_reading == 0)
+  {
+    //Serial.println("HA");
+    calibrate(finalmin);
+    
+  }
+
+  
+
+
+  //check if user starts the wheel
+  user_sw_2_reading = digitalRead(user_sw_2_pin);
+  if (user_sw_2_reading == LOW && startCar == false)
+  {
+      startCar = true;
+     //- hasTurn = false;
+      delay(500);  //check here later
+   }
+  else if (user_sw_2_reading == LOW && startCar == true)
+    {
+      startCar = false;
+      delay (500); //check here later
+    }
+  if (startCar)
+  {
+
+    carAlg();
+    
+  }
+  else
+  {
+    analogWrite(left_pwm_pin, 0);
+    analogWrite(right_pwm_pin, 0);
+  }
+
+
+  
+
+
+
+
+
+  
+
+  // print the sensor values as numbers from 0 to 2500, where 0 means maximum reflectance and
+  // 2500 means minimum reflectance
+  /*for (unsigned char i = 0; i < 8; i++)
+  {
+    Serial.print(sensorValues[i]);
+    Serial.print('\t'); // tab to format the raw data into columns in the Serial monitor
+  }
+  Serial.println();
+  */
+
+
+//delay (100);
+  
+
+}
+
+
+
+void carAlg()
+{
+
+        
+    checkTurn();
+
+   
+
+
+
+
+     
+     float finalError = weight(sensorValues);
+
+                                              
+     float error = kp * finalError + kd * (finalError - lastError);
+
+     pastErrors[2] = pastErrors[1];
+     pastErrors[1] = pastErrors[0];
+     pastErrors[0] = error;
+
+     float avgError = (pastErrors[2] + pastErrors[1] + pastErrors[0]) / 3;
+
+
+  //Serial.println(avgError);
+
+
+
+ 
+   analogWrite(left_pwm_pin, baseSpeed -avgError);
+   analogWrite(right_pwm_pin, baseSpeed +avgError);
+
+
+
+     
+     
+
+
+
+  
+}
+
+
+  void checkTurn()
+  {
+ 
+    int count = 0;
+  
+    for (int i = 0; i < 8; i++)
+     {
+       if (sensorValues[i] > 2000)
+        {
+         count++; 
+        }
+     }
+
+
+      if (count == 8 && hasTurn == false)
+      {
+       
+       turn();
+       hasTurn = true;
+        
+      }
+      
+      else 
+       if (count == 8 && hasTurn == true)
+      {
+        analogWrite(left_pwm_pin, 0);
+        analogWrite(right_pwm_pin, 0);
+        startCar = false;
+        //Serial.println("END");
+        
+      }
+
+    
+  }
+
+  
+  
+  void turn()
+  {
+     
+     /* 
+      digitalWrite(left_dir_pin, LOW);
+      digitalWrite(right_dir_pin, HIGH);
+      
+
+      while (getEncoderCount_left() < 320)
+      {
+       analogWrite(left_pwm_pin, 50);
+       analogWrite(right_pwm_pin, 50);
+      }
+
+
+      digitalWrite(left_dir_pin, LOW);
+      digitalWrite(right_dir_pin, LOW);
+      analogWrite(right_pwm_pin, baseSpeed);
+      analogWrite(left_pwm_pin, baseSpeed);
+
+      delay(1000);
+
+      analogWrite(right_pwm_pin, 0);
+      analogWrite(left_pwm_pin, 0);
+
+      */
+
+        analogWrite(left_pwm_pin, 0);
+        analogWrite(right_pwm_pin, 0);
+        delay(300);
+
+      digitalWrite(left_dir_pin, LOW);
+      digitalWrite(right_dir_pin, HIGH);
+      analogWrite(left_pwm_pin, 50);
+      analogWrite(right_pwm_pin, 50);
+     
+      delay(turnTime);
+
+       digitalWrite(left_dir_pin, LOW);
+      digitalWrite(right_dir_pin, LOW);
+      analogWrite(left_pwm_pin, baseSpeed);
+      analogWrite(right_pwm_pin, baseSpeed);
+
+      delay(200);
+
+      analogWrite(left_pwm_pin,  0);
+      analogWrite(right_pwm_pin, 0);
+      
+  }
+
+
+//Calibrate white line for 100 readings
+void calibrate (float minArray[])
+{
+
+
+    digitalWrite(LED_RF, HIGH);
+    uint16_t minVal[8];
+
+  //reset minArray
+  for (int i = 0; i < 8; i++)
+  {
+    minArray[i] = 0;
+  }
+
+
+  //take 100 readings and add it to minArray
+    for (int i = 0; i < 100; i++)
+  {
+    ECE3_read_IR(minVal);
+
+    for (int i = 0; i < 8; i++)
+    {
+      minArray[i] += minVal[i];
+    }
+  }
+
+
+//take 100 Averages
+  for (int i = 0; i < 8; i++)
+  {
+    minArray[i] = minArray[i] / 100;
+  }
+
+  digitalWrite(LED_RF, LOW);
+
+   for (unsigned char i = 0; i < 8; i++)
+  {
+    Serial.print(minArray[i]);
+    Serial.print('\t'); // tab to format the raw data into columns in the Serial monitor
+  }
+  Serial.println();
+
+
+  
+}
